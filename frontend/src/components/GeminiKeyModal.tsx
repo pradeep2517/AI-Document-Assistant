@@ -34,7 +34,7 @@ export const GeminiKeyModal: React.FC<GeminiKeyModalProps> = ({
     try {
       const res = await saveGeminiKey(apiKey.trim());
       if (res.gemini_configured) {
-        setMessage({ text: 'Google Gemini API key connected successfully!', type: 'success' });
+        setMessage({ text: 'Google Gemini API key verified and connected successfully!', type: 'success' });
         setTimeout(() => {
           onKeySaved();
           onClose();
@@ -49,6 +49,24 @@ export const GeminiKeyModal: React.FC<GeminiKeyModalProps> = ({
     }
   };
 
+  const handleDisconnect = async () => {
+    setLoading(true);
+    setMessage(null);
+    try {
+      await saveGeminiKey('');
+      setApiKey('');
+      setMessage({ text: 'Gemini API key disconnected successfully.', type: 'success' });
+      setTimeout(() => {
+        onKeySaved();
+        onClose();
+      }, 1000);
+    } catch (err: any) {
+      setMessage({ text: err.message || 'Failed to disconnect key.', type: 'error' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="modal-backdrop" onClick={onClose} role="dialog" aria-modal="true">
       <div className="modal-dialog" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '480px' }}>
@@ -56,6 +74,11 @@ export const GeminiKeyModal: React.FC<GeminiKeyModalProps> = ({
           <div className="modal-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span>💎</span>
             <span>Google Gemini API Integration</span>
+            {geminiConfigured && (
+              <span style={{ fontSize: '11px', background: '#ecfdf5', color: '#059669', padding: '2px 8px', borderRadius: '12px', fontWeight: 600 }}>
+                Active
+              </span>
+            )}
           </div>
           <button className="modal-close-btn" onClick={onClose} title="Close">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -109,23 +132,37 @@ export const GeminiKeyModal: React.FC<GeminiKeyModalProps> = ({
             </div>
           )}
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '8px' }}>
-            <button
-              type="button"
-              className="popup-btn"
-              onClick={onClose}
-              style={{ background: '#f1f5f9', color: '#475569' }}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={loading}
-              className="popup-btn primary"
-              style={{ background: '#7c3aed', color: '#ffffff' }}
-            >
-              {loading ? 'Connecting...' : 'Save & Activate Gemini'}
-            </button>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px' }}>
+            {geminiConfigured ? (
+              <button
+                type="button"
+                className="popup-btn"
+                onClick={handleDisconnect}
+                disabled={loading}
+                style={{ background: '#fee2e2', color: '#dc2626', fontSize: '12px' }}
+              >
+                Disconnect Key
+              </button>
+            ) : <span />}
+
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                type="button"
+                className="popup-btn"
+                onClick={onClose}
+                style={{ background: '#f1f5f9', color: '#475569' }}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={loading}
+                className="popup-btn primary"
+                style={{ background: '#7c3aed', color: '#ffffff' }}
+              >
+                {loading ? 'Verifying with Google...' : 'Save & Activate Gemini'}
+              </button>
+            </div>
           </div>
         </form>
       </div>

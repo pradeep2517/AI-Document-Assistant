@@ -59,7 +59,7 @@ class ChatMessageCreate(BaseModel):
     content: str
     session_id: Optional[str] = None
     document_id: Optional[str] = None
-    model: Optional[str] = "GPT-4"
+    model: Optional[str] = "Local / Ollama"
 
 
 class ChatMessageResponse(BaseModel):

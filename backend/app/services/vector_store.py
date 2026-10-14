@@ -55,17 +55,20 @@ async def search_similar_chunks(
             hits = []
             for r in rows:
                 score = float(r.score)
-                if score >= similarity_threshold:
-                    hits.append({
-                        "chunk_id": str(r.id),
-                        "document_id": str(r.document_id),
-                        "chunk_index": int(r.chunk_index),
-                        "page_number": int(r.page_number),
-                        "text": str(r.text),
-                        "score": round(score, 4),
-                    })
-            if hits:
-                return hits
+                hits.append({
+                    "chunk_id": str(r.id),
+                    "document_id": str(r.document_id),
+                    "chunk_index": int(r.chunk_index),
+                    "page_number": int(r.page_number),
+                    "text": str(r.text),
+                    "score": round(score, 4),
+                })
+            # Filter by threshold if matches exist, otherwise keep top matches
+            filtered = [h for h in hits if h["score"] >= similarity_threshold]
+            if filtered:
+                return filtered[:top_k]
+            elif hits:
+                return hits[:top_k]
         except Exception as pg_err:
             logger.warning(f"pgvector query attempt failed ({pg_err}). Falling back to in-memory cosine matching.")
 
@@ -86,6 +89,7 @@ async def search_similar_chunks(
         return []
 
     scored_chunks = []
+    all_scored = []
     for chunk in all_chunks:
         emb = chunk.get_embedding()
         if not emb or len(emb) != len(query_vec):
@@ -97,16 +101,48 @@ async def search_similar_chunks(
             continue
 
         sim = float(np.dot(query_arr, c_arr) / (q_norm * c_norm))
+        chunk_dict = {
+            "chunk_id": chunk.id,
+            "document_id": chunk.document_id,
+            "chunk_index": chunk.chunk_index,
+            "page_number": chunk.page_number,
+            "text": chunk.text,
+            "score": round(sim, 4),
+        }
+        all_scored.append(chunk_dict)
         if sim >= similarity_threshold:
-            scored_chunks.append({
-                "chunk_id": chunk.id,
-                "document_id": chunk.document_id,
-                "chunk_index": chunk.chunk_index,
-                "page_number": chunk.page_number,
-                "text": chunk.text,
-                "score": round(sim, 4),
-            })
+            scored_chunks.append(chunk_dict)
 
-    # Sort descending by similarity score
-    scored_chunks.sort(key=lambda x: x["score"], reverse=True)
-    return scored_chunks[:top_k]
+    # Sort all chunks descending by similarity
+    all_scored.sort(key=lambda x: x["score"], reverse=True)
+
+    # If threshold filtered everything out, take the closest chunks from the document
+    if not scored_chunks and all_scored:
+        scored_chunks = all_scored[:top_k]
+    else:
+        scored_chunks.sort(key=lambda x: x["score"], reverse=True)
+        scored_chunks = scored_chunks[:top_k]
+
+    # For broad/overview queries (topic, title, summary, content, what is this),
+    # ensure Page 1 introductory chunk is present so the model knows the document topic
+    query_lower = query_text.lower()
+    is_overview_query = any(w in query_lower for w in [
+        "topic", "title", "subject", "pdf", "document", "about", "summary",
+        "summarize", "overview", "what is this", "content", "tell", "name"
+    ])
+    if is_overview_query and all_chunks:
+        has_page_1 = any(c["page_number"] == 1 for c in scored_chunks)
+        if not has_page_1:
+            p1_chunk = next((c for c in all_chunks if c.page_number == 1), None)
+            if p1_chunk:
+                scored_chunks.insert(0, {
+                    "chunk_id": p1_chunk.id,
+                    "document_id": p1_chunk.document_id,
+                    "chunk_index": p1_chunk.chunk_index,
+                    "page_number": 1,
+                    "text": p1_chunk.text,
+                    "score": 0.99,
+                })
+                scored_chunks = scored_chunks[:top_k + 1]
+
+    return scored_chunks

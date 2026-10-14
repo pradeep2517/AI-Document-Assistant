@@ -135,6 +135,14 @@ async def send_chat_message(
 
     # 3. Retrieve relevant chunks from vector store
     target_doc_id = data.document_id or session.document_id
+    doc_title = None
+    if target_doc_id:
+        doc_stmt = select(Document).where(Document.id == target_doc_id)
+        doc_res = await db.execute(doc_stmt)
+        doc_obj = doc_res.scalar_one_or_none()
+        if doc_obj:
+            doc_title = doc_obj.filename
+
     retrieved_chunks = await search_similar_chunks(
         session=db,
         query_text=user_query,
@@ -147,7 +155,8 @@ async def send_chat_message(
     rag_result = await answer_question_with_rag(
         question=user_query,
         retrieved_chunks=retrieved_chunks,
-        requested_model=data.model or "GPT-4"
+        requested_model=data.model or "Local / Ollama",
+        document_title=doc_title
     )
 
     # 5. Save assistant message
@@ -233,12 +242,75 @@ async def get_models_status():
     }
 
 
+def persist_env_key(key_name: str, value: str):
+    """Persists an environment variable to .env files so it survives restarts."""
+    import os
+    os.environ[key_name] = value
+
+    env_paths = [
+        settings.BASE_DIR / ".env",
+        settings.BASE_DIR.parent / ".env"
+    ]
+    for env_path in env_paths:
+        try:
+            lines = []
+            key_found = False
+            if env_path.exists():
+                with open(env_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                for i, line in enumerate(lines):
+                    if line.strip().startswith(f"{key_name}=") or line.strip() == key_name:
+                        lines[i] = f"{key_name}={value}\n"
+                        key_found = True
+                        break
+            if not key_found:
+                lines.append(f"{key_name}={value}\n")
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+        except Exception as e:
+            logger.warning(f"Failed to persist {key_name} to {env_path}: {e}")
+
+
 @router.post("/models/gemini-key")
 async def set_gemini_key(data: dict):
-    """Dynamically sets or updates the Gemini API key at runtime."""
+    """
+    Dynamically sets, verifies with Google Generative Language API, and persists
+    the Gemini API key to .env.
+    """
+    import httpx
+
     new_key = data.get("api_key", "").strip()
-    if new_key:
-        settings.GEMINI_API_KEY = new_key
-        return {"status": "success", "gemini_configured": True}
-    return {"status": "cleared", "gemini_configured": False}
+    if not new_key:
+        settings.GEMINI_API_KEY = ""
+        persist_env_key("GEMINI_API_KEY", "")
+        return {"status": "cleared", "gemini_configured": False, "message": "Gemini API key cleared."}
+
+    # Verify key with Google API before saving
+    verify_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={new_key}"
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(verify_url)
+            if resp.status_code in (400, 403):
+                err_msg = "Invalid Google Gemini API key. Please check your key from Google AI Studio."
+                try:
+                    err_json = resp.json()
+                    if "error" in err_json and "message" in err_json["error"]:
+                        err_msg = f"Google Gemini Error: {err_json['error']['message']}"
+                except Exception:
+                    pass
+                raise HTTPException(status_code=400, detail=err_msg)
+            elif resp.status_code != 200:
+                logger.warning(f"Gemini API verification returned status {resp.status_code}: {resp.text}")
+    except HTTPException:
+        raise
+    except httpx.RequestError as e:
+        logger.warning(f"Could not reach Google Gemini API for verification (offline/firewall): {e}")
+
+    settings.GEMINI_API_KEY = new_key
+    persist_env_key("GEMINI_API_KEY", new_key)
+    return {
+        "status": "success",
+        "gemini_configured": True,
+        "message": "Google Gemini API key verified and connected successfully!"
+    }
 

@@ -87,20 +87,17 @@ async def call_gemini_api(
     api_key: str = settings.GEMINI_API_KEY,
     model: str = settings.GEMINI_MODEL
 ) -> Optional[str]:
-    """Calls Google Gemini API directly via REST endpoint."""
+    """Calls Google Gemini API directly via REST endpoint with model fallback."""
     if not api_key:
         return None
 
-    # Default to gemini-1.5-flash if standard alias
-    clean_model = model
-    if "flash" in model.lower():
-        clean_model = "gemini-1.5-flash"
-    elif "pro" in model.lower():
-        clean_model = "gemini-1.5-pro"
-    elif "2.0" in model.lower():
-        clean_model = "gemini-2.0-flash"
+    # Modern active Gemini models supported by Google Generative AI API
+    if "pro" in model.lower():
+        models_to_try = ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.5-flash-lite"]
+    else:
+        # Flash / default
+        models_to_try = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash"]
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent?key={api_key}"
     payload = {
         "contents": [
             {
@@ -116,80 +113,107 @@ async def call_gemini_api(
         }
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=35.0) as client:
-            resp = await client.post(url, json=payload)
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if candidates and "content" in candidates[0]:
-                    parts = candidates[0]["content"].get("parts", [])
-                    if parts:
-                        return parts[0].get("text", "").strip()
-            else:
-                logger.warning(f"Gemini API returned status {resp.status_code}: {resp.text}")
-    except Exception as e:
-        logger.warning(f"Error calling Gemini API: {e}")
+    for candidate_model in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{candidate_model}:generateContent?key={api_key}"
+        try:
+            async with httpx.AsyncClient(timeout=25.0) as client:
+                resp = await client.post(url, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates and "content" in candidates[0]:
+                        parts = candidates[0]["content"].get("parts", [])
+                        if parts:
+                            return parts[0].get("text", "").strip()
+                elif resp.status_code in (404, 503):
+                    logger.info(f"Gemini model '{candidate_model}' returned {resp.status_code}, trying next candidate...")
+                    continue
+                else:
+                    logger.warning(f"Gemini API returned status {resp.status_code} for {candidate_model}: {resp.text}")
+        except Exception as e:
+            logger.warning(f"Error calling Gemini model '{candidate_model}': {e}")
+            continue
 
     return None
 
 
-def generate_grounded_synthesis(question: str, chunks: List[Dict[str, Any]]) -> str:
+def generate_grounded_synthesis(
+    question: str,
+    chunks: List[Dict[str, Any]],
+    document_title: Optional[str] = None
+) -> str:
     """
     Intelligent Grounded RAG Synthesis Engine:
-    When no external API key is set, this high-performance grounded engine analyzes
-    the matching chunks, extracts relevant factual sentences, organizes them with exact
-    [Page X] citations, and produces a structured, readable answer.
+    Analyzes matching document chunks, extracts meaningful structured points,
+    organizes them with exact [Page X] citations, and produces a non-repetitive,
+    readable answer.
     """
     if not chunks:
-        return "I could not find any relevant sections in the uploaded document matching your question. Please try asking about specific concepts, titles, or methodologies mentioned in the text."
+        doc_ref = f" in **{document_title}**" if document_title else ""
+        return f"I could not locate specific matching sections{doc_ref} for your query. Please try asking about specific concepts, titles, or methodologies mentioned in the document."
 
     q_words = set(re.findall(r"\w+", question.lower())) - {
-        "what", "is", "the", "are", "how", "why", "in", "of", "and", "a", "an", "to", "for", "with", "about"
+        "what", "is", "the", "are", "how", "why", "in", "of", "and", "a", "an", "to", "for", "with", "about",
+        "tell", "give", "me", "this", "can", "you", "please", "do", "does", "about", "describe"
     }
 
-    synthesized_points = []
-    primary_page = chunks[0]["page_number"]
+    candidates = []
+    seen_texts = set()
 
-    # Gather best sentences from top chunks
-    for chunk in chunks[:4]:
+    for chunk in chunks:
         page = chunk["page_number"]
-        text = chunk["text"]
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-
-        for s in sentences:
+        text = chunk["text"].strip()
+        text = re.sub(r"\s+", " ", text)
+        
+        # Split into logical sentence blocks without breaking on abbreviations
+        raw_sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", text)
+        for s in raw_sentences:
             clean_s = s.strip()
-            if len(clean_s) < 25:
+            if len(clean_s) < 30 or clean_s in seen_texts:
                 continue
+            seen_texts.add(clean_s)
+            
             s_words = set(re.findall(r"\w+", clean_s.lower()))
             overlap = len(q_words & s_words)
-            if overlap > 0 or len(synthesized_points) == 0:
-                formatted = f"{clean_s} **[Page {page}]**"
-                if formatted not in synthesized_points:
-                    synthesized_points.append(formatted)
-            if len(synthesized_points) >= 4:
-                break
-        if len(synthesized_points) >= 4:
+            candidates.append({
+                "page": page,
+                "text": clean_s,
+                "overlap": overlap,
+                "length": len(clean_s)
+            })
+
+    # Sort candidates by keyword overlap, then by page order
+    candidates.sort(key=lambda x: (x["overlap"], -x["page"]), reverse=True)
+
+    # Take top distinct informative points (up to 4)
+    selected_points = []
+    for c in candidates:
+        if c["overlap"] > 0 or len(selected_points) < 3:
+            point = f"- {c['text']} **[Page {c['page']}]**"
+            if point not in selected_points:
+                selected_points.append(point)
+        if len(selected_points) >= 4:
             break
 
-    if not synthesized_points:
-        best_chunk = chunks[0]
-        synthesized_points.append(f"{best_chunk['text'][:280]}... **[Page {best_chunk['page_number']}]**")
+    if not selected_points and chunks:
+        for c in chunks[:3]:
+            selected_points.append(f"- {c['text'][:220].strip()}... **[Page {c['page_number']}]**")
 
-    body_text = " ".join(synthesized_points)
+    doc_header = f"### {document_title}\n\n" if document_title else ""
+    body_text = "\n\n".join(selected_points)
     
-    response = (
-        f"Based on the document excerpts retrieved, here are the key findings:\n\n"
+    return (
+        f"{doc_header}Based on the document excerpts retrieved, here are the key findings:\n\n"
         f"{body_text}\n\n"
-        f"> **Grounding Verification**: Answer derived directly from Page {primary_page} with {len(chunks)} supporting excerpt(s)."
+        f"> **Grounding Verification**: Answer synthesized from {len(selected_points)} verified document excerpt(s)."
     )
-    return response
 
 
 async def answer_question_with_rag(
     question: str,
     retrieved_chunks: List[Dict[str, Any]],
-    requested_model: str = "Local / Ollama"
+    requested_model: str = "Local / Ollama",
+    document_title: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Synthesizes a fully grounded response with verified page citations
@@ -198,19 +222,21 @@ async def answer_question_with_rag(
     citations = extract_citations(retrieved_chunks)
 
     if not retrieved_chunks:
+        doc_ref = f" in **{document_title}**" if document_title else "in the selected document"
         return {
-            "answer": "I could not find relevant information in the selected document to answer your question. Please verify the document or try rephrasing.",
+            "answer": f"I could not find relevant information {doc_ref} to answer your question. Please verify the document or try rephrasing.",
             "citations": [],
             "model_used": "Document Assistant"
         }
 
-    # Format context with explicit page numbers (top 3 most relevant chunks)
+    # Format context with explicit page numbers (top chunks)
     context_lines = []
-    for c in retrieved_chunks[:3]:
+    for c in retrieved_chunks[:4]:
         context_lines.append(f"--- Document Page {c['page_number']} (Relevance Score: {c['score']:.2f}) ---\n{c['text']}")
     context_str = "\n\n".join(context_lines)
 
-    user_prompt = f"""DOCUMENT EXCERPTS:
+    doc_context = f"DOCUMENT TITLE: {document_title}\n\n" if document_title else ""
+    user_prompt = f"""{doc_context}DOCUMENT EXCERPTS:
 {context_str}
 
 USER QUESTION:
@@ -242,16 +268,29 @@ Provide your grounded answer with citations like [Page X]:"""
         if ollama_resp:
             answer_text = ollama_resp
             model_name = f"Local Ollama ({ollama_model})"
-        else:
-            logger.warning("Local Ollama call failed or timed out. Falling back to Grounded Synthesizer.")
-            answer_text = generate_grounded_synthesis(question, retrieved_chunks)
+        elif settings.GEMINI_API_KEY:
+            # Seamless fallback to Google Gemini when Ollama daemon is offline!
+            logger.info("Local Ollama daemon is offline or timed out. Seamlessly routing to Google Gemini API...")
+            gemini_resp = await call_gemini_api(
+                prompt=user_prompt,
+                system_prompt=SYSTEM_PROMPT,
+                api_key=settings.GEMINI_API_KEY,
+                model="gemini-3.5-flash-lite"
+            )
+            if gemini_resp:
+                answer_text = gemini_resp
+                model_name = "Google Gemini (gemini-3.5-flash-lite)"
+
+        if not answer_text:
+            logger.warning("Local Ollama and Gemini fallback unavailable. Falling back to Grounded Synthesizer.")
+            answer_text = generate_grounded_synthesis(question, retrieved_chunks, document_title)
             model_name = f"Local Ollama ({ollama_model} Fallback)"
 
     # 2. Route to Google Gemini API
     elif is_gemini_requested:
-        gemini_model_id = "gemini-1.5-flash"
+        gemini_model_id = "gemini-3.5-flash-lite"
         if "pro" in requested_model.lower():
-            gemini_model_id = "gemini-1.5-pro"
+            gemini_model_id = "gemini-3.1-pro-preview"
 
         if settings.GEMINI_API_KEY:
             logger.info(f"Routing RAG query to Google Gemini API '{gemini_model_id}'...")
@@ -265,11 +304,11 @@ Provide your grounded answer with citations like [Page X]:"""
                 answer_text = gemini_resp
                 model_name = f"Google Gemini ({gemini_model_id})"
             else:
-                answer_text = generate_grounded_synthesis(question, retrieved_chunks)
+                answer_text = generate_grounded_synthesis(question, retrieved_chunks, document_title)
                 model_name = f"Google Gemini (Fallback)"
         else:
             # Inform user that Gemini API key is needed
-            base_synthesis = generate_grounded_synthesis(question, retrieved_chunks)
+            base_synthesis = generate_grounded_synthesis(question, retrieved_chunks, document_title)
             answer_text = (
                 f"ℹ️ *Note: Google Gemini API Key is not yet configured in `.env` or Settings. Below is the grounded answer synthesized from the document:*\n\n"
                 f"{base_synthesis}"
@@ -278,7 +317,7 @@ Provide your grounded answer with citations like [Page X]:"""
 
     # 3. Default fallback
     if not answer_text:
-        answer_text = generate_grounded_synthesis(question, retrieved_chunks)
+        answer_text = generate_grounded_synthesis(question, retrieved_chunks, document_title)
         model_name = f"{requested_model} (Grounded RAG)"
 
     return {

@@ -34,9 +34,7 @@ export const ChatPane: React.FC<ChatPaneProps> = ({
   const handleFeedback = async (messageId: string, type: 'up' | 'down') => {
     try {
       await recordMessageFeedback(messageId, type);
-      // Local optimistic update
-      const msg = messages.find((m) => m.id === messageId);
-      if (msg) msg.feedback = type;
+      // Note: feedback persisted server-side; UI will reflect on next full refresh
     } catch (e) {
       console.error('Failed to record feedback:', e);
     }

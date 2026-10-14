@@ -21,6 +21,10 @@ import { ChatInput } from '../components/ChatInput';
 import { DocumentsModal } from '../components/DocumentsModal';
 import { SettingsModal } from '../components/SettingsModal';
 import { GeminiKeyModal } from '../components/GeminiKeyModal';
+import { ApiDocsModal } from '../components/ApiDocsModal';
+import { RagToolsModal } from '../components/RagToolsModal';
+import { HelpModal } from '../components/HelpModal';
+import { ProfileModal } from '../components/ProfileModal';
 
 export default function Home() {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
@@ -40,6 +44,17 @@ export default function Home() {
   const [isDocsModalOpen, setIsDocsModalOpen] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [isGeminiModalOpen, setIsGeminiModalOpen] = useState<boolean>(false);
+  const [isApiDocsModalOpen, setIsApiDocsModalOpen] = useState<boolean>(false);
+  const [isToolsModalOpen, setIsToolsModalOpen] = useState<boolean>(false);
+  const [isHelpModalOpen, setIsHelpModalOpen] = useState<boolean>(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 2500);
+  };
 
   // 1. Initial Load of Documents, Sessions, and Model Status
   const loadData = useCallback(async () => {
@@ -60,6 +75,10 @@ export default function Home() {
       if (modelStat) {
         setOllamaOnline(modelStat.ollama_online);
         setGeminiConfigured(modelStat.gemini_configured);
+        // Automatically select Gemini when Local Ollama is offline
+        if (!modelStat.ollama_online && modelStat.gemini_configured) {
+          setSelectedModel('Gemini 1.5 Flash');
+        }
       }
 
       // Select active document if not already chosen
@@ -67,17 +86,22 @@ export default function Home() {
         setActiveDocument(docs[0]);
       }
 
-      // Select active session
+      // Select active session (prefer most recently updated session)
       if (sessList.length > 0 && !activeSessionId) {
-        const primary = sessList.find((s) => s.title.includes('Renewable Energy')) || sessList[0];
+        const primary = sessList[0];
         setActiveSessionId(primary.id);
         const fullSess = await fetchChatSession(primary.id);
         setMessages(fullSess.messages || []);
+        if (fullSess.document_id) {
+          const matchedDoc = docs.find((d) => d.id === fullSess.document_id);
+          if (matchedDoc) setActiveDocument(matchedDoc);
+        }
       }
     } catch (e) {
       console.error('Failed to load initial assistant data:', e);
     }
-  }, [activeDocument, activeSessionId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     loadData();
@@ -114,16 +138,18 @@ export default function Home() {
   const handleDeleteSession = async (sessionId: string) => {
     try {
       await deleteChatSession(sessionId);
-      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
-      if (activeSessionId === sessionId) {
-        const remaining = sessions.filter((s) => s.id !== sessionId);
-        if (remaining.length > 0) {
-          handleSelectSession(remaining[0].id);
-        } else {
-          setActiveSessionId(null);
-          setMessages([]);
+      setSessions((prev) => {
+        const remaining = prev.filter((s) => s.id !== sessionId);
+        if (activeSessionId === sessionId) {
+          if (remaining.length > 0) {
+            handleSelectSession(remaining[0].id);
+          } else {
+            setActiveSessionId(null);
+            setMessages([]);
+          }
         }
-      }
+        return remaining;
+      });
     } catch (e) {
       console.error('Error deleting session:', e);
     }
@@ -157,7 +183,12 @@ export default function Home() {
 
       setMessages((prev) => [...prev.filter((m) => m.id !== tempUserMsg.id), tempUserMsg, response]);
 
-      // If this was a new session, refresh titles
+      // Track the session the backend used (handles auto-created sessions)
+      if (response.session_id && response.session_id !== activeSessionId) {
+        setActiveSessionId(response.session_id);
+      }
+
+      // Refresh session list to pick up new/updated titles
       const updatedSessions = await fetchChatSessions();
       setSessions(updatedSessions);
     } catch (err: any) {
@@ -210,23 +241,50 @@ export default function Home() {
     }
   };
 
+  const handleResetWorkspace = async () => {
+    try {
+      const newSession = await createChatSession('Fresh Conversation', activeDocument?.id);
+      setActiveSessionId(newSession.id);
+      setMessages([]);
+      const updated = await fetchChatSessions();
+      setSessions(updated);
+      showToast('Workspace reset — Started fresh conversation');
+    } catch (e: any) {
+      showToast('Session reset completed');
+      setMessages([]);
+    }
+  };
+
   return (
     <main className="app-viewport">
       <div className="app-frame">
         {/* Leftmost Slim Dark Icon Dock */}
         <IconDock
+          conversationCount={sessions.length}
+          onHome={() => {
+            showToast('AI Document Assistant — Home');
+            setActiveCitationPage(null);
+          }}
+          onToggleSidebar={() => setIsSidebarOpen((prev) => !prev)}
           onOpenDocuments={() => setIsDocsModalOpen(true)}
+          onOpenApiDocs={() => setIsApiDocsModalOpen(true)}
+          onOpenTools={() => setIsToolsModalOpen(true)}
+          onOpenHelp={() => setIsHelpModalOpen(true)}
           onOpenSettings={() => setIsSettingsModalOpen(true)}
+          onOpenProfile={() => setIsProfileModalOpen(true)}
+          onLogout={() => setIsProfileModalOpen(true)}
         />
 
         {/* Conversation History Sidebar */}
-        <ConversationsSidebar
-          sessions={sessions}
-          activeSessionId={activeSessionId}
-          onSelectSession={handleSelectSession}
-          onNewConversation={handleNewConversation}
-          onDeleteSession={handleDeleteSession}
-        />
+        {isSidebarOpen && (
+          <ConversationsSidebar
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            onSelectSession={handleSelectSession}
+            onNewConversation={handleNewConversation}
+            onDeleteSession={handleDeleteSession}
+          />
+        )}
 
         {/* Main Workspace Area */}
         <div className="workspace-container">
@@ -295,6 +353,58 @@ export default function Home() {
             setSelectedModel('Gemini 1.5 Flash');
           }}
         />
+
+        <ApiDocsModal
+          isOpen={isApiDocsModalOpen}
+          onClose={() => setIsApiDocsModalOpen(false)}
+        />
+
+        <RagToolsModal
+          isOpen={isToolsModalOpen}
+          onClose={() => setIsToolsModalOpen(false)}
+          ollamaOnline={ollamaOnline}
+          geminiConfigured={geminiConfigured}
+        />
+
+        <HelpModal
+          isOpen={isHelpModalOpen}
+          onClose={() => setIsHelpModalOpen(false)}
+        />
+
+        <ProfileModal
+          isOpen={isProfileModalOpen}
+          onClose={() => setIsProfileModalOpen(false)}
+          documentCount={documents.length}
+          conversationCount={sessions.length}
+          activeModel={selectedModel}
+          onResetWorkspace={handleResetWorkspace}
+        />
+
+        {/* Toast Notification */}
+        {toastMessage && (
+          <div
+            style={{
+              position: 'fixed',
+              bottom: '24px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              background: '#0f172a',
+              color: '#ffffff',
+              padding: '10px 20px',
+              borderRadius: '9999px',
+              fontSize: '13px',
+              fontWeight: 600,
+              boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.3)',
+              zIndex: 9999,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+            }}
+          >
+            <span>✨</span>
+            <span>{toastMessage}</span>
+          </div>
+        )}
       </div>
     </main>
   );

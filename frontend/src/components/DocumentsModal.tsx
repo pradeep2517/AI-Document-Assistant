@@ -35,16 +35,19 @@ export const DocumentsModal: React.FC<DocumentsModalProps> = ({
       return;
     }
 
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timer2: ReturnType<typeof setTimeout> | undefined;
+
     try {
       setIsUploading(true);
       setUploadStage('Extracting text with PyMuPDF...');
       
       // Stage progress simulation for user clarity
-      const timer = setTimeout(() => {
+      timer = setTimeout(() => {
         setUploadStage(forceOcr ? 'Executing Tesseract OCR on scanned page layouts...' : 'Analyzing document pages and layout...');
       }, 1200);
 
-      const timer2 = setTimeout(() => {
+      timer2 = setTimeout(() => {
         setUploadStage('Generating 384-dimensional embeddings (Sentence Transformers)...');
       }, 2500);
 
@@ -59,6 +62,8 @@ export const DocumentsModal: React.FC<DocumentsModalProps> = ({
         onSelectDocument(uploadedDoc);
       }, 600);
     } catch (err: any) {
+      clearTimeout(timer);
+      clearTimeout(timer2);
       alert(`Upload error: ${err.message || 'Failed to upload document'}`);
       setIsUploading(false);
     }

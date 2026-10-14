@@ -12,7 +12,9 @@ async function handleResponse<T>(res: Response): Promise<T> {
         errorMsg = typeof errorData.detail === 'string' ? errorData.detail : JSON.stringify(errorData.detail);
       }
     } catch {
-      // ignore
+      if (res.status === 500 || res.status === 502 || res.status === 504) {
+        errorMsg = 'Backend server unreachable. Please make sure the FastAPI server is running on port 8000.';
+      }
     }
     throw new Error(errorMsg);
   }

@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     
     # Vector Search & RAG
     TOP_K_CHUNKS: int = 5
-    SIMILARITY_THRESHOLD: float = 0.25
+    SIMILARITY_THRESHOLD: float = 0.10
     
     # LLM Settings
     LLM_PROVIDER: str = "auto"  # 'auto', 'openai', 'gemini', 'groq', 'ollama', 'mock'
@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-4o-mini"
     
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-1.5-flash"
+    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
     
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "llama-3.1-70b-versatile"
