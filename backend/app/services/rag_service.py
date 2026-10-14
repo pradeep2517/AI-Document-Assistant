@@ -26,7 +26,6 @@ def extract_citations(chunks: List[Dict[str, Any]]) -> List[Citation]:
 
     for c in chunks:
         page_num = c["page_number"]
-        # Take the most representative snippet (first 180 characters)
         raw_text = c["text"].strip()
         snippet = raw_text[:200] + ("..." if len(raw_text) > 200 else "")
 
@@ -41,21 +40,15 @@ def extract_citations(chunks: List[Dict[str, Any]]) -> List[Citation]:
     return citations
 
 
-async def call_openai_compatible_api(
+async def call_ollama_api(
     prompt: str,
     system_prompt: str = SYSTEM_PROMPT,
-    base_url: str = settings.OPENAI_BASE_URL,
-    api_key: str = settings.OPENAI_API_KEY,
-    model: str = settings.OPENAI_MODEL
+    model: str = "mistral:latest",
+    base_url: str = settings.OLLAMA_BASE_URL
 ) -> Optional[str]:
-    """Calls any OpenAI-compatible API endpoint (OpenAI, Groq, Ollama, vLLM)."""
-    if not api_key and "localhost" not in base_url and "127.0.0.1" not in base_url:
-        return None
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}" if api_key else "Bearer none"
-    }
+    """Calls local Ollama instance via REST API (e.g. mistral:latest, llama3.2)."""
+    clean_base = base_url.rstrip("/")
+    url = f"{clean_base}/api/chat"
 
     payload = {
         "model": model,
@@ -63,21 +56,27 @@ async def call_openai_compatible_api(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.2,
-        "max_tokens": 800
+        "stream": False,
+        "options": {
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "num_ctx": 2048,
+            "num_predict": 250,
+        }
     }
 
     try:
-        url = f"{base_url.rstrip('/')}/chat/completions"
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, headers=headers, json=payload)
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.post(url, json=payload)
             if resp.status_code == 200:
                 data = resp.json()
-                return data["choices"][0]["message"]["content"].strip()
+                msg = data.get("message", {}).get("content", "").strip()
+                if msg:
+                    return msg
             else:
-                logger.warning(f"LLM API returned status {resp.status_code}: {resp.text}")
+                logger.warning(f"Ollama API returned status {resp.status_code}: {resp.text}")
     except Exception as e:
-        logger.warning(f"Error calling LLM API ({base_url}): {e}")
+        logger.warning(f"Error calling local Ollama ({url}): {e}")
 
     return None
 
@@ -92,7 +91,16 @@ async def call_gemini_api(
     if not api_key:
         return None
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    # Default to gemini-1.5-flash if standard alias
+    clean_model = model
+    if "flash" in model.lower():
+        clean_model = "gemini-1.5-flash"
+    elif "pro" in model.lower():
+        clean_model = "gemini-1.5-pro"
+    elif "2.0" in model.lower():
+        clean_model = "gemini-2.0-flash"
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent?key={api_key}"
     payload = {
         "contents": [
             {
@@ -104,12 +112,12 @@ async def call_gemini_api(
         ],
         "generationConfig": {
             "temperature": 0.2,
-            "maxOutputTokens": 800,
+            "maxOutputTokens": 1000,
         }
     }
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=35.0) as client:
             resp = await client.post(url, json=payload)
             if resp.status_code == 200:
                 data = resp.json()
@@ -156,7 +164,6 @@ def generate_grounded_synthesis(question: str, chunks: List[Dict[str, Any]]) -> 
             s_words = set(re.findall(r"\w+", clean_s.lower()))
             overlap = len(q_words & s_words)
             if overlap > 0 or len(synthesized_points) == 0:
-                # Add with citation
                 formatted = f"{clean_s} **[Page {page}]**"
                 if formatted not in synthesized_points:
                     synthesized_points.append(formatted)
@@ -169,7 +176,6 @@ def generate_grounded_synthesis(question: str, chunks: List[Dict[str, Any]]) -> 
         best_chunk = chunks[0]
         synthesized_points.append(f"{best_chunk['text'][:280]}... **[Page {best_chunk['page_number']}]**")
 
-    # Structure into rich markdown response
     body_text = " ".join(synthesized_points)
     
     response = (
@@ -183,11 +189,11 @@ def generate_grounded_synthesis(question: str, chunks: List[Dict[str, Any]]) -> 
 async def answer_question_with_rag(
     question: str,
     retrieved_chunks: List[Dict[str, Any]],
-    requested_model: str = "GPT-4"
+    requested_model: str = "Local / Ollama"
 ) -> Dict[str, Any]:
     """
     Synthesizes a fully grounded response with verified page citations
-    using the best available LLM provider or the grounded fallback synthesizer.
+    using Local Ollama or Google Gemini API based on user choice.
     """
     citations = extract_citations(retrieved_chunks)
 
@@ -198,9 +204,9 @@ async def answer_question_with_rag(
             "model_used": "Document Assistant"
         }
 
-    # Format context with explicit page numbers
+    # Format context with explicit page numbers (top 3 most relevant chunks)
     context_lines = []
-    for c in retrieved_chunks:
+    for c in retrieved_chunks[:3]:
         context_lines.append(f"--- Document Page {c['page_number']} (Relevance Score: {c['score']:.2f}) ---\n{c['text']}")
     context_str = "\n\n".join(context_lines)
 
@@ -215,33 +221,62 @@ Provide your grounded answer with citations like [Page X]:"""
     answer_text = None
     model_name = requested_model
 
-    # 1. Try Gemini if configured
-    if settings.GEMINI_API_KEY:
-        gemini_answer = await call_gemini_api(user_prompt)
-        if gemini_answer:
-            answer_text = gemini_answer
-            model_name = f"Gemini ({settings.GEMINI_MODEL})"
+    # Check if user specifically requested Local Ollama
+    is_ollama_requested = "ollama" in requested_model.lower() or "local" in requested_model.lower()
+    is_gemini_requested = "gemini" in requested_model.lower()
 
-    # 2. Try OpenAI / Groq if configured
-    if not answer_text and settings.OPENAI_API_KEY:
-        openai_answer = await call_openai_compatible_api(user_prompt)
-        if openai_answer:
-            answer_text = openai_answer
-            model_name = f"OpenAI ({settings.OPENAI_MODEL})"
+    # 1. Route to Local Ollama Agent
+    if is_ollama_requested:
+        ollama_model = "mistral:latest"
+        if "mistral" in requested_model.lower():
+            ollama_model = "mistral:latest"
+        elif "llama" in requested_model.lower():
+            ollama_model = "llama3.2"
 
-    # 3. Try Groq if configured
-    if not answer_text and settings.GROQ_API_KEY:
-        groq_answer = await call_openai_compatible_api(
+        logger.info(f"Routing RAG query to Local Ollama model '{ollama_model}'...")
+        ollama_resp = await call_ollama_api(
             prompt=user_prompt,
-            base_url="https://api.groq.com/openai/v1",
-            api_key=settings.GROQ_API_KEY,
-            model=settings.GROQ_MODEL
+            system_prompt=SYSTEM_PROMPT,
+            model=ollama_model
         )
-        if groq_answer:
-            answer_text = groq_answer
-            model_name = f"Groq ({settings.GROQ_MODEL})"
+        if ollama_resp:
+            answer_text = ollama_resp
+            model_name = f"Local Ollama ({ollama_model})"
+        else:
+            logger.warning("Local Ollama call failed or timed out. Falling back to Grounded Synthesizer.")
+            answer_text = generate_grounded_synthesis(question, retrieved_chunks)
+            model_name = f"Local Ollama ({ollama_model} Fallback)"
 
-    # 4. Fallback to Grounded RAG Synthesis Engine
+    # 2. Route to Google Gemini API
+    elif is_gemini_requested:
+        gemini_model_id = "gemini-1.5-flash"
+        if "pro" in requested_model.lower():
+            gemini_model_id = "gemini-1.5-pro"
+
+        if settings.GEMINI_API_KEY:
+            logger.info(f"Routing RAG query to Google Gemini API '{gemini_model_id}'...")
+            gemini_resp = await call_gemini_api(
+                prompt=user_prompt,
+                system_prompt=SYSTEM_PROMPT,
+                api_key=settings.GEMINI_API_KEY,
+                model=gemini_model_id
+            )
+            if gemini_resp:
+                answer_text = gemini_resp
+                model_name = f"Google Gemini ({gemini_model_id})"
+            else:
+                answer_text = generate_grounded_synthesis(question, retrieved_chunks)
+                model_name = f"Google Gemini (Fallback)"
+        else:
+            # Inform user that Gemini API key is needed
+            base_synthesis = generate_grounded_synthesis(question, retrieved_chunks)
+            answer_text = (
+                f"ℹ️ *Note: Google Gemini API Key is not yet configured in `.env` or Settings. Below is the grounded answer synthesized from the document:*\n\n"
+                f"{base_synthesis}"
+            )
+            model_name = "Gemini (Grounded Synthesizer)"
+
+    # 3. Default fallback
     if not answer_text:
         answer_text = generate_grounded_synthesis(question, retrieved_chunks)
         model_name = f"{requested_model} (Grounded RAG)"
@@ -256,7 +291,8 @@ Provide your grounded answer with citations like [Page X]:"""
 async def process_text_action(
     text: str,
     action: str,
-    page_number: Optional[int] = None
+    page_number: Optional[int] = None,
+    model: str = "Local / Ollama"
 ) -> str:
     """Handles interactive selection actions: 'explain', 'summarise', or 'rewrite'."""
     page_ref = f" from Page {page_number}" if page_number else ""
@@ -270,13 +306,15 @@ async def process_text_action(
     else:
         prompt = f"Analyze the following text{page_ref}:\n\n\"{text}\""
 
-    # Try external LLM if available
-    if settings.OPENAI_API_KEY:
-        resp = await call_openai_compatible_api(prompt)
+    # Try Ollama if selected
+    if "ollama" in model.lower() or "local" in model.lower():
+        resp = await call_ollama_api(prompt, model="mistral:latest")
         if resp:
             return resp
-    if settings.GEMINI_API_KEY:
-        resp = await call_gemini_api(prompt)
+
+    # Try Gemini if selected
+    if "gemini" in model.lower() and settings.GEMINI_API_KEY:
+        resp = await call_gemini_api(prompt, api_key=settings.GEMINI_API_KEY)
         if resp:
             return resp
 

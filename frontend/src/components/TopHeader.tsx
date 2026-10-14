@@ -1,12 +1,15 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 
 interface TopHeaderProps {
   selectedModel: string;
   onSelectModel: (model: string) => void;
   documentCount: number;
   onOpenDocuments: () => void;
+  ollamaOnline: boolean;
+  geminiConfigured: boolean;
+  onOpenGeminiKeyModal: () => void;
 }
 
 export const TopHeader: React.FC<TopHeaderProps> = ({
@@ -14,13 +17,33 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   onSelectModel,
   documentCount,
   onOpenDocuments,
+  ollamaOnline,
+  geminiConfigured,
+  onOpenGeminiKeyModal,
 }) => {
+  // Only Local Ollama Agent and Google Gemini API models as requested
   const models = [
-    { id: 'GPT-3.5', label: 'GPT-3.5', icon: '⚡' },
-    { id: 'GPT-4', label: 'GPT-4', icon: '✨', isPurple: true },
-    { id: 'Claude', label: 'Claude', icon: 'AI' },
-    { id: 'Claude 2', label: 'Claude 2', icon: 'AI' },
-    { id: 'Local / Ollama', label: 'Local / Ollama', icon: '🦙' },
+    {
+      id: 'Local / Ollama (mistral:latest)',
+      label: 'Local Ollama (mistral)',
+      icon: '🦙',
+      status: ollamaOnline ? 'Online' : 'Offline',
+      isOnline: ollamaOnline,
+    },
+    {
+      id: 'Gemini 1.5 Flash',
+      label: 'Gemini 1.5 Flash',
+      icon: '✨',
+      status: geminiConfigured ? 'Ready' : 'Set Key',
+      isPurple: true,
+    },
+    {
+      id: 'Gemini 1.5 Pro',
+      label: 'Gemini 1.5 Pro',
+      icon: '💎',
+      status: geminiConfigured ? 'Ready' : 'Set Key',
+      isPurple: true,
+    },
   ];
 
   return (
@@ -38,12 +61,12 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
         </div>
         <div>
           <div className="bot-title">AskYourPDF</div>
-          <div className="bot-sub">Bot</div>
+          <div className="bot-sub">Local Ollama & Gemini Engine</div>
         </div>
       </div>
 
-      {/* Model Switcher */}
-      <div className="model-switcher" role="tablist" aria-label="LLM Model Selection">
+      {/* Model Switcher: ONLY Local Ollama and Gemini API */}
+      <div className="model-switcher" role="tablist" aria-label="LLM Agent Selection">
         {models.map((m) => {
           const isActive = selectedModel === m.id;
           return (
@@ -54,9 +77,22 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
               className={`model-tab ${isActive ? 'active' : ''} ${isActive && m.isPurple ? 'gpt4' : ''}`}
               onClick={() => onSelectModel(m.id)}
               id={`tab-model-${m.id.toLowerCase().replace(/[^a-z0-9]/g, '-')}`}
+              title={`${m.label} (${m.status})`}
             >
               <span>{m.icon}</span>
               <span>{m.label}</span>
+              <span
+                style={{
+                  fontSize: '9px',
+                  padding: '1px 5px',
+                  borderRadius: '9999px',
+                  fontWeight: 700,
+                  background: m.isOnline ? '#dcfce7' : (m.isPurple && geminiConfigured ? '#ede9fe' : '#f1f5f9'),
+                  color: m.isOnline ? '#15803d' : (m.isPurple && geminiConfigured ? '#6d28d9' : '#64748b'),
+                }}
+              >
+                {m.status}
+              </span>
             </button>
           );
         })}
@@ -64,16 +100,27 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
 
       {/* Header Right Tools */}
       <div className="header-right-tools">
-        {/* Language selector */}
-        <button className="pill-lang" title="Language: English" id="btn-lang-select">
-          EN ↑
+        {/* Gemini Key Config Shortcut */}
+        <button
+          className="pill-lang"
+          onClick={onOpenGeminiKeyModal}
+          title="Configure Google Gemini API Key"
+          id="btn-gemini-key"
+          style={{ background: geminiConfigured ? '#f3e8ff' : '#f1f4f8', color: geminiConfigured ? '#7c3aed' : '#475569' }}
+        >
+          {geminiConfigured ? '💎 Gemini Active' : '🔑 Gemini Key'}
         </button>
 
-        {/* Credits pill */}
-        <div className="pill-credits" title="Account Credits" id="badge-credits">
-          <span className="coin">🪙</span>
-          <span>500</span>
-          <span className="btn-text">Buy More Credit</span>
+        {/* Ollama Status pill */}
+        <div
+          className="pill-credits"
+          style={{ background: ollamaOnline ? '#0f172a' : '#475569' }}
+          title={ollamaOnline ? 'Ollama Daemon Running on 127.0.0.1:11434' : 'Ollama Daemon Offline'}
+          id="badge-ollama-status"
+        >
+          <span className="coin">{ollamaOnline ? '🟢' : '⚪'}</span>
+          <span>{ollamaOnline ? 'Ollama' : 'Offline'}</span>
+          <span className="btn-text">mistral</span>
         </div>
 
         {/* Documents Toggle */}

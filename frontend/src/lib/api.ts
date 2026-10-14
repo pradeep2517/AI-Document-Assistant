@@ -1,6 +1,7 @@
 import { DocumentItem, DocumentChunk, ChatSession, ChatMessage, HealthInfo } from './types';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// Use relative URL on browser so Next.js rewrites proxy to backend without CORS or IPv6 issues
+const API_BASE = typeof window !== 'undefined' ? '' : (process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000');
 
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -88,7 +89,7 @@ export async function sendChatMessage(
   content: string,
   sessionId?: string,
   documentId?: string,
-  model: string = 'GPT-4'
+  model: string = 'Local / Ollama (mistral:latest)'
 ): Promise<ChatMessage> {
   const res = await fetch(`${API_BASE}/api/v1/chat/message`, {
     method: 'POST',
@@ -115,14 +116,34 @@ export async function recordMessageFeedback(messageId: string, feedback: 'up' | 
 export async function executeTextAction(
   text: string,
   action: 'explain' | 'summarise' | 'rewrite',
-  pageNumber?: number
+  pageNumber?: number,
+  model: string = 'Local / Ollama (mistral:latest)'
 ): Promise<{ result: string }> {
   const res = await fetch(`${API_BASE}/api/v1/chat/text-action`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, action, page_number: pageNumber }),
+    body: JSON.stringify({ text, action, page_number: pageNumber, model }),
   });
   return handleResponse<{ result: string }>(res);
+}
+
+export async function fetchModelStatus(): Promise<{
+  ollama_online: boolean;
+  ollama_models: string[];
+  gemini_configured: boolean;
+  gemini_model: string;
+}> {
+  const res = await fetch(`${API_BASE}/api/v1/chat/models/status`, { cache: 'no-store' });
+  return handleResponse(res);
+}
+
+export async function saveGeminiKey(apiKey: string): Promise<{ status: string; gemini_configured: boolean }> {
+  const res = await fetch(`${API_BASE}/api/v1/chat/models/gemini-key`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+  return handleResponse(res);
 }
 
 export function getDocumentFileUrl(docId: string): string {

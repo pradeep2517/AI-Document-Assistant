@@ -95,15 +95,22 @@ class ChatSession(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
-    document = relationship("Document", back_populates="sessions")
+    document = relationship("Document", back_populates="sessions", lazy="selectin")
     messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan", lazy="selectin", order_by="ChatMessage.created_at")
 
     def to_dict(self) -> Dict[str, Any]:
+        doc_name = None
+        try:
+            if self.document:
+                doc_name = self.document.filename
+        except Exception:
+            doc_name = None
+
         return {
             "id": self.id,
             "title": self.title,
             "document_id": self.document_id,
-            "document_name": self.document.filename if self.document else None,
+            "document_name": doc_name,
             "messages_count": len(self.messages) if self.messages else 0,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

@@ -205,3 +205,40 @@ async def execute_text_action(data: TextActionRequest):
         "page_number": data.page_number,
         "result": result
     }
+
+
+@router.get("/models/status")
+async def get_models_status():
+    """Returns availability of Local Ollama and Google Gemini configurations."""
+    import httpx
+    ollama_online = False
+    ollama_models = []
+
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/tags")
+            if resp.status_code == 200:
+                ollama_online = True
+                data = resp.json()
+                ollama_models = [m.get("name") for m in data.get("models", [])]
+    except Exception:
+        ollama_online = False
+
+    return {
+        "ollama_online": ollama_online,
+        "ollama_models": ollama_models or ["mistral:latest"],
+        "gemini_configured": bool(settings.GEMINI_API_KEY.strip()),
+        "gemini_model": settings.GEMINI_MODEL,
+        "default_ollama_model": "mistral:latest"
+    }
+
+
+@router.post("/models/gemini-key")
+async def set_gemini_key(data: dict):
+    """Dynamically sets or updates the Gemini API key at runtime."""
+    new_key = data.get("api_key", "").strip()
+    if new_key:
+        settings.GEMINI_API_KEY = new_key
+        return {"status": "success", "gemini_configured": True}
+    return {"status": "cleared", "gemini_configured": False}
+

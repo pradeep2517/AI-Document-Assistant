@@ -10,6 +10,7 @@ import {
   deleteChatSession,
   sendChatMessage,
   executeTextAction,
+  fetchModelStatus,
 } from '../lib/api';
 import { IconDock } from '../components/IconDock';
 import { ConversationsSidebar } from '../components/ConversationsSidebar';
@@ -19,6 +20,7 @@ import { ChatPane } from '../components/ChatPane';
 import { ChatInput } from '../components/ChatInput';
 import { DocumentsModal } from '../components/DocumentsModal';
 import { SettingsModal } from '../components/SettingsModal';
+import { GeminiKeyModal } from '../components/GeminiKeyModal';
 
 export default function Home() {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
@@ -27,23 +29,38 @@ export default function Home() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   
-  const [selectedModel, setSelectedModel] = useState<string>('GPT-4');
+  // Model state: exclusively Local Ollama and Gemini API
+  const [selectedModel, setSelectedModel] = useState<string>('Local / Ollama (mistral:latest)');
+  const [ollamaOnline, setOllamaOnline] = useState<boolean>(true);
+  const [geminiConfigured, setGeminiConfigured] = useState<boolean>(false);
+  
   const [activeCitationPage, setActiveCitationPage] = useState<number | null>(null);
   const [loadingAnswer, setLoadingAnswer] = useState<boolean>(false);
 
   const [isDocsModalOpen, setIsDocsModalOpen] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
+  const [isGeminiModalOpen, setIsGeminiModalOpen] = useState<boolean>(false);
 
-  // 1. Initial Load of Documents & Sessions
+  // 1. Initial Load of Documents, Sessions, and Model Status
   const loadData = useCallback(async () => {
     try {
-      const [docs, sessList] = await Promise.all([
+      const [docs, sessList, modelStat] = await Promise.all([
         fetchDocuments().catch(() => []),
         fetchChatSessions().catch(() => []),
+        fetchModelStatus().catch(() => ({
+          ollama_online: true,
+          ollama_models: ['mistral:latest'],
+          gemini_configured: false,
+          gemini_model: 'gemini-1.5-flash',
+        })),
       ]);
 
       setDocuments(docs);
       setSessions(sessList);
+      if (modelStat) {
+        setOllamaOnline(modelStat.ollama_online);
+        setGeminiConfigured(modelStat.gemini_configured);
+      }
 
       // Select active document if not already chosen
       if (docs.length > 0 && !activeDocument) {
@@ -112,7 +129,7 @@ export default function Home() {
     }
   };
 
-  // 5. Send Question to RAG Pipeline
+  // 5. Send Question to RAG Pipeline (Routes to Local Ollama or Gemini API)
   const handleSendMessage = async (content: string) => {
     if (!content.trim() || loadingAnswer) return;
 
@@ -149,7 +166,7 @@ export default function Home() {
         id: `err-${Date.now()}`,
         session_id: activeSessionId || 'default',
         role: 'assistant',
-        content: `I encountered an issue processing your request: ${err.message}. Please ensure the backend is active.`,
+        content: `I encountered an issue processing your request: ${err.message}. Please verify the agent connection.`,
         citations: [],
         model_used: selectedModel,
         created_at: new Date().toISOString(),
@@ -168,7 +185,7 @@ export default function Home() {
   ) => {
     setLoadingAnswer(true);
     try {
-      const res = await executeTextAction(text, action, pageNumber);
+      const res = await executeTextAction(text, action, pageNumber, selectedModel);
       const actionMsg: ChatMessage = {
         id: `action-${Date.now()}`,
         session_id: activeSessionId || 'default',
@@ -213,12 +230,15 @@ export default function Home() {
 
         {/* Main Workspace Area */}
         <div className="workspace-container">
-          {/* Top Header Bar */}
+          {/* Top Header Bar with Local Ollama & Gemini API Selection */}
           <TopHeader
             selectedModel={selectedModel}
             onSelectModel={setSelectedModel}
             documentCount={documents.length}
             onOpenDocuments={() => setIsDocsModalOpen(true)}
+            ollamaOnline={ollamaOnline}
+            geminiConfigured={geminiConfigured}
+            onOpenGeminiKeyModal={() => setIsGeminiModalOpen(true)}
           />
 
           {/* Split Content Area: Document Viewer + Chat Pane */}
@@ -264,6 +284,16 @@ export default function Home() {
         <SettingsModal
           isOpen={isSettingsModalOpen}
           onClose={() => setIsSettingsModalOpen(false)}
+        />
+
+        <GeminiKeyModal
+          isOpen={isGeminiModalOpen}
+          onClose={() => setIsGeminiModalOpen(false)}
+          geminiConfigured={geminiConfigured}
+          onKeySaved={() => {
+            setGeminiConfigured(true);
+            setSelectedModel('Gemini 1.5 Flash');
+          }}
         />
       </div>
     </main>
