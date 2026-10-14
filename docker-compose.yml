@@ -1,0 +1,58 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: docassistant_db
+    restart: always
+    environment:
+      POSTGRES_DB: docassistant
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d docassistant"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: docassistant_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/docassistant
+      - ENV=production
+      - CORS_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]
+      - TOP_K_CHUNKS=5
+      - SIMILARITY_THRESHOLD=0.25
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - doc_uploads:/app/uploads
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: docassistant_frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  doc_uploads:
